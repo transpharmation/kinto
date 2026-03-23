@@ -116,14 +116,22 @@ class PermissionsModel:
         # Obtain current principals.
         principals = self.request.prefixed_principals
 
-        # Extract bucket_id from filters to push it into the SQL query
-        # as an object_id prefix, avoiding a full table scan.
+        # Extract bucket_id (and optionally collection_id) from filters to push
+        # them into the SQL query as an object_id prefix, avoiding a full table scan.
         object_id_prefix = None
         if filters:
+            bucket_id_value = None
+            collection_id_value = None
             for f in filters:
-                if f.field == "bucket_id" and f.operator == COMPARISON.EQ:
-                    object_id_prefix = f"/buckets/{f.value}"
-                    break
+                if f.operator == COMPARISON.EQ:
+                    if f.field == "bucket_id":
+                        bucket_id_value = f.value
+                    elif f.field == "collection_id":
+                        collection_id_value = f.value
+            if bucket_id_value is not None:
+                object_id_prefix = f"/buckets/{bucket_id_value}"
+                if collection_id_value is not None:
+                    object_id_prefix += f"/collections/{collection_id_value}"
 
         # Query every possible permission of the current user from backend.
         backend = self.request.registry.permission
