@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 
 HERE = os.path.dirname(__file__)
 
+# Must stay identical to the predicate of the idx_ace_principal_nohistory
+# partial index (schema.sql), otherwise the planner cannot use it.
+HISTORY_EXCLUSION_CONDITION = "object_id NOT LIKE '%/history/%'"
+
 
 class Permission(PermissionBase, MigratorMixin):
     """Permission backend using PostgreSQL.
@@ -68,7 +72,7 @@ class Permission(PermissionBase, MigratorMixin):
     """  # NOQA
 
     name = "permission"
-    schema_version = 2
+    schema_version = 3
     schema_file = os.path.join(HERE, "schema.sql")
     migrations_directory = os.path.join(HERE, "migrations")
 
@@ -278,7 +282,7 @@ class Permission(PermissionBase, MigratorMixin):
                 placeholders["prefix_exact"] = object_id_prefix
                 placeholders["prefix_children"] = object_id_prefix + "/%"
             if ignore_history:
-                query = f"{query} AND object_id not like '%/history/%'"
+                query = f"{query} AND {HISTORY_EXCLUSION_CONDITION}"
             placeholders["principals"] = tuple(principals)
 
         elif len(bound_permissions) == 0:
@@ -305,7 +309,7 @@ class Permission(PermissionBase, MigratorMixin):
                     "object_id LIKE pattern AND object_id NOT LIKE pattern || '/%'"
                 )
             if ignore_history:
-                object_id_condition = f"{object_id_condition} AND object_id not like '%/history/%'"
+                object_id_condition = f"{object_id_condition} AND {HISTORY_EXCLUSION_CONDITION}"
             query = f"""
             WITH required_perms AS (
               VALUES {",".join(perm_values)}
