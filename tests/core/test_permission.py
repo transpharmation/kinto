@@ -68,3 +68,54 @@ class PostgreSQLPermissionTest(PermissionTest, unittest.TestCase):
                 side_effect=sqlalchemy.exc.SQLAlchemyError,  # type: ignore[possibly-missing-attribute]
             )
         ]
+
+    def _explain_accessible_objects(self, *args, **kwargs):
+        """Run get_accessible_objects() and return the plan of its SQL query."""
+        captured = []
+
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            if "access_control_entries" in statement:
+                captured.append((statement, parameters))
+
+        sqlalchemy.event.listen(sqlalchemy.engine.Engine, "before_cursor_execute", capture)
+        try:
+            self.permission.get_accessible_objects(*args, **kwargs)
+        finally:
+            sqlalchemy.event.remove(sqlalchemy.engine.Engine, "before_cursor_execute", capture)
+
+        statement, parameters = captured[-1]
+        with self.permission.client.connect(readonly=True) as session:
+            conn = session.connection()
+            # Tiny test tables make a sequential scan cheapest; we only check
+            # that the partial index is usable by the generated SQL.
+            conn.exec_driver_sql("SET LOCAL enable_seqscan = off")
+            rows = conn.exec_driver_sql("EXPLAIN " + statement, parameters).fetchall()
+        return "\n".join(r[0] for r in rows)
+
+    def _add_history_heavy_aces(self):
+        query = """
+        INSERT INTO access_control_entries (object_id, permission, principal)
+        SELECT '/buckets/b' || (i % 20) || '/history/h' || i, 'read', 'admins'
+          FROM generate_series(1, 3000) i
+        UNION ALL
+        SELECT '/buckets/b' || i, 'write', 'admins'
+          FROM generate_series(1, 20) i;
+        ANALYZE access_control_entries;
+        """
+        with self.permission.client.connect(force_commit=True) as conn:
+            conn.execute(sqlalchemy.text(query))
+
+    def test_accessible_objects_ignoring_history_uses_partial_index(self):
+        self._add_history_heavy_aces()
+        plan = self._explain_accessible_objects(
+            ["admins"],
+            [("/buckets/*", "read"), ("/buckets/*", "write")],
+            with_children=False,
+            ignore_history=True,
+        )
+        self.assertIn("idx_ace_principal_nohistory", plan)
+
+    def test_unbound_accessible_objects_ignoring_history_uses_partial_index(self):
+        self._add_history_heavy_aces()
+        plan = self._explain_accessible_objects(["admins"], ignore_history=True)
+        self.assertIn("idx_ace_principal_nohistory", plan)
